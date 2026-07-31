@@ -1,0 +1,9 @@
+services:
+  wisel-mcp:
+    build: .
+    restart: unless-stopped
+    environment:
+      WISEL_API_URL: ${WISEL_API_URL}
+      WISEL_API_TOKEN: ${WISEL_API_TOKEN}
+    stdin_open: true
+    tty: false
