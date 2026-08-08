@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -8,6 +10,8 @@ import { wisel } from "./client.js";
 
 const port = Number(process.env.PORT || 3004);
 const mcpToken = process.env.MCP_API_TOKEN;
+const mediaDir = process.env.WISEL_MEDIA_DIR || "/media";
+const mediaPublicUrl = (process.env.WISEL_MEDIA_PUBLIC_URL || "https://api.wisel.my/media").replace(/\/$/, "");
 if (!mcpToken) throw new Error("MCP_API_TOKEN is required.");
 
 const result = (data: unknown, message?: string) => ({
@@ -26,8 +30,44 @@ const authorized = (authorization?: string) => {
   return Boolean(authorization?.startsWith(prefix) && safeEqual(authorization.slice(prefix.length), mcpToken));
 };
 
+const imageExtensions: Record<string, string> = {
+  "image/webp": "webp",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+};
+
+function safeMediaStem(value: string) {
+  const stem = value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100);
+  return stem || `wisel-${Date.now()}`;
+}
+
+async function storeThumbnail(imageBase64: string, mimeType: string, preferredName: string) {
+  const extension = imageExtensions[mimeType];
+  if (!extension) throw new Error("Thumbnail must be WebP, PNG or JPEG.");
+
+  const normalized = imageBase64.includes(",") ? imageBase64.slice(imageBase64.indexOf(",") + 1) : imageBase64;
+  const bytes = Buffer.from(normalized, "base64");
+  if (!bytes.length) throw new Error("Thumbnail data is empty or invalid.");
+  if (bytes.length > 1_500_000) throw new Error("Thumbnail is too large. Keep it below 1.5 MB, preferably below 300 KB.");
+
+  await mkdir(mediaDir, { recursive: true });
+  const filename = `${safeMediaStem(preferredName)}-${Date.now()}.${extension}`;
+  await writeFile(join(mediaDir, filename), bytes, { mode: 0o644 });
+  return {
+    filename,
+    size: bytes.length,
+    mimeType,
+    url: `${mediaPublicUrl}/${encodeURIComponent(filename)}`,
+  };
+}
+
 function createMcpServer() {
-  const server = new McpServer({ name: "wisel-mcp", version: "0.2.1" });
+  const server = new McpServer({ name: "wisel-mcp", version: "0.3.0" });
 
   server.tool("health_check", "Check the Wisel editorial API", {}, async () => result(await wisel.health()));
 
@@ -61,7 +101,7 @@ function createMcpServer() {
 
   server.tool(
     "create_wisel_story_for_review",
-    "Create a new Wisel story for human review in the admin dashboard. The story is always saved with review status and is never published automatically.",
+    "Create a new Wisel story for human review. Optionally include an AI-generated thumbnail as base64; the MCP saves it to VPS media storage and stores its public URL on the story.",
     {
       slug: z.string().min(1),
       title: z.string().min(1),
@@ -70,15 +110,17 @@ function createMcpServer() {
       category: z.string().min(1),
       authorName: z.string().optional(),
       coverImageUrl: z.string().nullable().optional(),
+      thumbnailBase64: z.string().min(1).optional(),
+      thumbnailMimeType: z.enum(["image/webp", "image/png", "image/jpeg"]).optional(),
       seoTitle: z.string().nullable().optional(),
       seoDescription: z.string().nullable().optional(),
       sourceUrl: z.string().nullable().optional(),
       confirmationStatus: z.enum(["confirmed", "developing", "rumour"]).optional(),
     },
-    async (story) => {
+    async ({ thumbnailBase64, thumbnailMimeType, ...story }) => {
       try {
         await wisel.get(story.slug);
-        throw new Error(`A Wisel story with slug '${story.slug}' already exists. Use update_wisel_story instead.`);
+        throw new Error(`A Wisel story with slug '${story.slug}' already exists. Use update_wisel_story or attach_wisel_story_thumbnail instead.`);
       } catch (error) {
         if (!(error instanceof Error) || !error.message.includes("Wisel API 404")) {
           if (error instanceof Error && error.message.startsWith("A Wisel story")) throw error;
@@ -86,14 +128,42 @@ function createMcpServer() {
         }
       }
 
+      let coverImageUrl = story.coverImageUrl ?? null;
+      let thumbnail: Awaited<ReturnType<typeof storeThumbnail>> | null = null;
+      if (thumbnailBase64 || thumbnailMimeType) {
+        if (!thumbnailBase64 || !thumbnailMimeType) throw new Error("Provide both thumbnailBase64 and thumbnailMimeType.");
+        thumbnail = await storeThumbnail(thumbnailBase64, thumbnailMimeType, story.slug);
+        coverImageUrl = thumbnail.url;
+      }
+
       const created = await wisel.create({
         ...story,
+        coverImageUrl,
         authorName: story.authorName ?? "Wisel Malaysia",
         confirmationStatus: story.confirmationStatus ?? "confirmed",
         status: "review",
       });
       const verified = await wisel.get(story.slug);
-      return result({ created, verified }, `Saved '${story.title}' to Wisel for review and verified the stored record.`);
+      return result({ created, verified, thumbnail }, `Saved '${story.title}' to Wisel for review${thumbnail ? " with its thumbnail" : ""} and verified the stored record.`);
+    },
+  );
+
+  server.tool(
+    "attach_wisel_story_thumbnail",
+    "Upload a generated thumbnail to persistent Wisel VPS media storage and attach its public URL to an existing story. The story remains in review status.",
+    {
+      id: z.string().min(1),
+      imageBase64: z.string().min(1),
+      mimeType: z.enum(["image/webp", "image/png", "image/jpeg"]),
+      filenameStem: z.string().min(1).optional(),
+    },
+    async ({ id, imageBase64, mimeType, filenameStem }) => {
+      const current = await wisel.get(id) as { story?: Record<string, unknown> };
+      const slug = typeof current.story?.slug === "string" ? current.story.slug : id;
+      const thumbnail = await storeThumbnail(imageBase64, mimeType, filenameStem ?? slug);
+      const updated = await wisel.update(id, { coverImageUrl: thumbnail.url, status: "review" });
+      const verified = await wisel.get(id);
+      return result({ thumbnail, updated, verified }, `Uploaded the thumbnail and attached it to '${slug}' for review.`);
     },
   );
 
@@ -136,7 +206,7 @@ async function readJsonBody(req: IncomingMessage) {
   let raw = "";
   for await (const chunk of req) {
     raw += chunk;
-    if (raw.length > 2_000_000) throw new Error("Request body too large");
+    if (raw.length > 4_000_000) throw new Error("Request body too large");
   }
   return raw ? JSON.parse(raw) : undefined;
 }
