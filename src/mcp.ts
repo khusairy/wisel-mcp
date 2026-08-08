@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { wisel } from "./client.js";
+import { handleOAuthRequest, oauthAuthorizeBearer, oauthResourceMetadataUrl } from "./oauth.js";
 
 const port = Number(process.env.PORT || 3004);
 const mcpToken = process.env.MCP_API_TOKEN;
@@ -25,10 +26,14 @@ const safeEqual = (left: string, right: string) => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
-const authorized = (authorization?: string) => {
+const staticAuthorized = (authorization?: string) => {
   const prefix = "Bearer ";
   return Boolean(authorization?.startsWith(prefix) && safeEqual(authorization.slice(prefix.length), mcpToken));
 };
+
+async function authorized(authorization?: string) {
+  return staticAuthorized(authorization) || await oauthAuthorizeBearer(authorization);
+}
 
 const imageExtensions: Record<string, string> = {
   "image/webp": "webp",
@@ -67,7 +72,7 @@ async function storeThumbnail(imageBase64: string, mimeType: string, preferredNa
 }
 
 function createMcpServer() {
-  const server = new McpServer({ name: "wisel-mcp", version: "0.3.0" });
+  const server = new McpServer({ name: "wisel-mcp", version: "0.4.0" });
 
   server.tool("health_check", "Check the Wisel editorial API", {}, async () => result(await wisel.health()));
 
@@ -214,28 +219,33 @@ async function readJsonBody(req: IncomingMessage) {
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-  if (req.method === "GET" && url.pathname === "/health") {
-    try {
-      await wisel.health();
-      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      return res.end(JSON.stringify({ status: "ok", service: "wisel-mcp" }));
-    } catch (error) {
-      res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
-      return res.end(JSON.stringify({ status: "error", error: error instanceof Error ? error.message : "Wisel API unavailable" }));
-    }
-  }
-
-  if (url.pathname !== "/mcp") {
-    res.writeHead(404, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ error: "Not found" }));
-  }
-
-  if (!authorized(req.headers.authorization)) {
-    res.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" });
-    return res.end(JSON.stringify({ error: "Unauthorized" }));
-  }
-
   try {
+    if (await handleOAuthRequest(req, res, url)) return;
+
+    if (req.method === "GET" && url.pathname === "/health") {
+      try {
+        await wisel.health();
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        return res.end(JSON.stringify({ status: "ok", service: "wisel-mcp", oauth: "available" }));
+      } catch (error) {
+        res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+        return res.end(JSON.stringify({ status: "error", error: error instanceof Error ? error.message : "Wisel API unavailable" }));
+      }
+    }
+
+    if (url.pathname !== "/mcp") {
+      res.writeHead(404, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ error: "Not found" }));
+    }
+
+    if (!await authorized(req.headers.authorization)) {
+      res.writeHead(401, {
+        "content-type": "application/json",
+        "www-authenticate": `Bearer resource_metadata="${oauthResourceMetadataUrl}", scope="wisel:editorial"`,
+      });
+      return res.end(JSON.stringify({ error: "Unauthorized" }));
+    }
+
     const sessionId = typeof req.headers["mcp-session-id"] === "string" ? req.headers["mcp-session-id"] : undefined;
 
     if (req.method === "POST") {
