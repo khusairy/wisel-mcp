@@ -235,7 +235,7 @@ async function authorizeGet(url: URL, res: ServerResponse) {
   if (!adminPassword) return sendHtml(res, 503, "<!doctype html><meta charset=utf-8><title>Wisel OAuth</title><p>OAuth is not configured.</p>");
   const validation = await validateAuthorize(url.searchParams);
   if ("error" in validation) {
-    if (validation.redirectUri) return redirect(res, appendOAuthError(validation.redirectUri, validation.error, url.searchParams.get("state")));
+    if (validation.redirectUri) return redirect(res, appendOAuthError(validation.redirectUri, String(validation.error), url.searchParams.get("state")));
     return sendJson(res, 400, { error: validation.error });
   }
 
@@ -248,7 +248,7 @@ async function authorizePost(req: IncomingMessage, res: ServerResponse) {
   const form = await readForm(req);
   const validation = await validateAuthorize(form);
   if ("error" in validation) {
-    if (validation.redirectUri) return redirect(res, appendOAuthError(validation.redirectUri, validation.error, form.get("state")));
+    if (validation.redirectUri) return redirect(res, appendOAuthError(validation.redirectUri, String(validation.error), form.get("state")));
     return sendJson(res, 400, { error: validation.error });
   }
   const suppliedPassword = form.get("password") || "";
