@@ -2,8 +2,9 @@ services:
   wisel-mcp:
     build: .
     restart: unless-stopped
+    network_mode: host
     environment:
+      PORT: 3004
       WISEL_API_URL: ${WISEL_API_URL}
       WISEL_API_TOKEN: ${WISEL_API_TOKEN}
-    stdin_open: true
-    tty: false
+      MCP_API_TOKEN: ${MCP_API_TOKEN}
