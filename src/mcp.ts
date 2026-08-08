@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -132,7 +132,7 @@ type Session = {
 
 const sessions = new Map<string, Session>();
 
-async function readJsonBody(req: Parameters<typeof createServer>[0] extends never ? never : any) {
+async function readJsonBody(req: IncomingMessage) {
   let raw = "";
   for await (const chunk of req) {
     raw += chunk;
