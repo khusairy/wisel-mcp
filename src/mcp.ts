@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage } from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -7,32 +7,19 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { wisel } from "./client.js";
-import { handleOAuthRequest, oauthAuthorizeBearer, oauthResourceMetadataUrl } from "./oauth.js";
+import { authkitAuthorizeBearer, authkitMetadata, authkitResourceMetadataUrl, handleAuthkitMetadataRequest } from "./authkit.js";
 
 const port = Number(process.env.PORT || 3004);
-const mcpToken = process.env.MCP_API_TOKEN;
 const mediaDir = process.env.WISEL_MEDIA_DIR || "/media";
 const mediaPublicUrl = (process.env.WISEL_MEDIA_PUBLIC_URL || "https://api.wisel.my/media").replace(/\/$/, "");
-if (!mcpToken) throw new Error("MCP_API_TOKEN is required.");
 
 const result = (data: unknown, message?: string) => ({
   content: [{ type: "text" as const, text: message ?? JSON.stringify(data, null, 2) }],
   structuredContent: typeof data === "object" && data !== null ? data as Record<string, unknown> : undefined,
 });
 
-const safeEqual = (left: string, right: string) => {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
-};
-
-const staticAuthorized = (authorization?: string) => {
-  const prefix = "Bearer ";
-  return Boolean(authorization?.startsWith(prefix) && safeEqual(authorization.slice(prefix.length), mcpToken));
-};
-
 async function authorized(authorization?: string) {
-  return staticAuthorized(authorization) || await oauthAuthorizeBearer(authorization);
+  return authkitAuthorizeBearer(authorization);
 }
 
 const imageExtensions: Record<string, string> = {
@@ -220,13 +207,13 @@ const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
   try {
-    if (await handleOAuthRequest(req, res, url)) return;
+    if (await handleAuthkitMetadataRequest(req, res, url)) return;
 
     if (req.method === "GET" && url.pathname === "/health") {
       try {
         await wisel.health();
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-        return res.end(JSON.stringify({ status: "ok", service: "wisel-mcp", oauth: "available" }));
+        return res.end(JSON.stringify({ status: "ok", service: "wisel-mcp", authorization: "workos-authkit" }));
       } catch (error) {
         res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
         return res.end(JSON.stringify({ status: "error", error: error instanceof Error ? error.message : "Wisel API unavailable" }));
@@ -241,7 +228,7 @@ const http = createServer(async (req, res) => {
     if (!await authorized(req.headers.authorization)) {
       res.writeHead(401, {
         "content-type": "application/json",
-        "www-authenticate": `Bearer resource_metadata="${oauthResourceMetadataUrl}", scope="wisel:editorial"`,
+        "www-authenticate": `Bearer error="unauthorized", resource_metadata="${authkitResourceMetadataUrl}"`,
       });
       return res.end(JSON.stringify({ error: "Unauthorized" }));
     }
