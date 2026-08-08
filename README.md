@@ -9,7 +9,7 @@ The MCP resource server delegates OAuth to WorkOS AuthKit. It does not issue, st
 On an unauthenticated request, the MCP advertises:
 
 - Resource: `https://api.wisel.my/mcp`
-- Resource metadata: `https://api.wisel.my/mcp/.well-known/oauth-protected-resource`
+- Resource metadata: `https://api.wisel.my/.well-known/oauth-protected-resource/mcp`
 - Authorization server: the configured `WORKOS_AUTHKIT_DOMAIN`
 
 The service validates each AuthKit JWT against `<WORKOS_AUTHKIT_DOMAIN>/oauth2/jwks`, requiring its issuer to be the AuthKit domain and its audience to be the MCP resource URL. There is no shared `MCP_API_TOKEN` bypass.
@@ -88,7 +88,7 @@ Expose the MCP through TLS as:
 https://api.wisel.my/mcp
 ```
 
-Proxy `/mcp` and `/mcp/.well-known/` to `http://127.0.0.1:3004`. The latter is required because the protected-resource metadata is served below the MCP resource URL.
+Proxy `/mcp` and `/.well-known/oauth-protected-resource/mcp` to `http://127.0.0.1:3004`. The latter is required for OAuth discovery.
 
 ## Health check
 
