@@ -10,7 +10,8 @@ function requiredHttpsUrl(name: string, value: string | undefined) {
 
 export const authkitDomain = requiredHttpsUrl("WORKOS_AUTHKIT_DOMAIN", process.env.WORKOS_AUTHKIT_DOMAIN);
 export const mcpResourceUrl = requiredHttpsUrl("WISEL_MCP_RESOURCE_URL", process.env.WISEL_MCP_RESOURCE_URL || "https://api.wisel.my/mcp");
-export const authkitResourceMetadataUrl = `${mcpResourceUrl}/.well-known/oauth-protected-resource`;
+const resourceUrl = new URL(mcpResourceUrl);
+export const authkitResourceMetadataUrl = `${resourceUrl.origin}/.well-known/oauth-protected-resource${resourceUrl.pathname === "/" ? "" : resourceUrl.pathname}`;
 const authorizationServerMetadataUrl = `${authkitDomain}/.well-known/oauth-authorization-server`;
 const jwks = createRemoteJWKSet(new URL(`${authkitDomain}/oauth2/jwks`));
 
