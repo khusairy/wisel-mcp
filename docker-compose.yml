@@ -7,13 +7,9 @@ services:
       PORT: 3004
       WISEL_API_URL: ${WISEL_API_URL}
       WISEL_API_TOKEN: ${WISEL_API_TOKEN}
-      MCP_API_TOKEN: ${MCP_API_TOKEN}
       WISEL_MEDIA_DIR: /media
       WISEL_MEDIA_PUBLIC_URL: ${WISEL_MEDIA_PUBLIC_URL:-https://api.wisel.my/media}
-      OAUTH_ADMIN_PASSWORD: ${OAUTH_ADMIN_PASSWORD:?Set OAUTH_ADMIN_PASSWORD in /opt/apps/wisel-mcp/.env}
-      OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-https://api.wisel.my}
-      OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-https://api.wisel.my/mcp}
-      OAUTH_STATE_FILE: /data/oauth-state.json
+      WORKOS_AUTHKIT_DOMAIN: ${WORKOS_AUTHKIT_DOMAIN:?Set WORKOS_AUTHKIT_DOMAIN in /opt/apps/wisel-mcp/.env}
+      WISEL_MCP_RESOURCE_URL: ${WISEL_MCP_RESOURCE_URL:-https://api.wisel.my/mcp}
     volumes:
       - /opt/apps/wisel/media:/media
-      - /opt/apps/wisel-mcp/data:/data
