@@ -8,3 +8,7 @@ services:
       WISEL_API_URL: ${WISEL_API_URL}
       WISEL_API_TOKEN: ${WISEL_API_TOKEN}
       MCP_API_TOKEN: ${MCP_API_TOKEN}
+      WISEL_MEDIA_DIR: /media
+      WISEL_MEDIA_PUBLIC_URL: ${WISEL_MEDIA_PUBLIC_URL:-https://api.wisel.my/media}
+    volumes:
+      - /opt/apps/wisel/media:/media
