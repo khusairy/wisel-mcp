@@ -12,6 +12,7 @@ import { authkitAuthorizeBearer, authkitMetadata, authkitResourceMetadataUrl, ha
 const port = Number(process.env.PORT || 3004);
 const mediaDir = process.env.WISEL_MEDIA_DIR || "/media";
 const mediaPublicUrl = (process.env.WISEL_MEDIA_PUBLIC_URL || "https://api.wisel.my/media").replace(/\/$/, "");
+const maxThumbnailBytes = 1_500_000;
 
 const result = (data: unknown, message?: string) => ({
   content: [{ type: "text" as const, text: message ?? JSON.stringify(data, null, 2) }],
@@ -38,14 +39,11 @@ function safeMediaStem(value: string) {
   return stem || `wisel-${Date.now()}`;
 }
 
-async function storeThumbnail(imageBase64: string, mimeType: string, preferredName: string) {
+async function storeThumbnailBytes(bytes: Buffer, mimeType: string, preferredName: string) {
   const extension = imageExtensions[mimeType];
   if (!extension) throw new Error("Thumbnail must be WebP, PNG or JPEG.");
-
-  const normalized = imageBase64.includes(",") ? imageBase64.slice(imageBase64.indexOf(",") + 1) : imageBase64;
-  const bytes = Buffer.from(normalized, "base64");
   if (!bytes.length) throw new Error("Thumbnail data is empty or invalid.");
-  if (bytes.length > 1_500_000) throw new Error("Thumbnail is too large. Keep it below 1.5 MB, preferably below 300 KB.");
+  if (bytes.length > maxThumbnailBytes) throw new Error("Thumbnail is too large. Keep it below 1.5 MB, preferably below 300 KB.");
 
   await mkdir(mediaDir, { recursive: true });
   const filename = `${safeMediaStem(preferredName)}-${Date.now()}.${extension}`;
@@ -56,6 +54,60 @@ async function storeThumbnail(imageBase64: string, mimeType: string, preferredNa
     mimeType,
     url: `${mediaPublicUrl}/${encodeURIComponent(filename)}`,
   };
+}
+
+async function storeThumbnail(imageBase64: string, mimeType: string, preferredName: string) {
+  const normalized = imageBase64.includes(",") ? imageBase64.slice(imageBase64.indexOf(",") + 1) : imageBase64;
+  return storeThumbnailBytes(Buffer.from(normalized, "base64"), mimeType, preferredName);
+}
+
+async function storeThumbnailFromUrl(imageUrl: string, preferredName: string) {
+  let source: URL;
+  try {
+    source = new URL(imageUrl);
+  } catch {
+    throw new Error("thumbnailImageUrl must be a valid HTTPS URL.");
+  }
+  if (source.protocol !== "https:" || source.username || source.password) {
+    throw new Error("thumbnailImageUrl must be a credential-free HTTPS URL.");
+  }
+
+  const response = await fetch(source, {
+    headers: { accept: "image/webp,image/png,image/jpeg" },
+    redirect: "error",
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error(`Thumbnail download failed: ${response.status}.`);
+
+  const mimeType = response.headers.get("content-type")?.split(";", 1)[0]?.toLowerCase();
+  if (!mimeType || !imageExtensions[mimeType]) {
+    throw new Error("Thumbnail URL must return a WebP, PNG or JPEG image.");
+  }
+  const declaredSize = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredSize) && declaredSize > maxThumbnailBytes) {
+    throw new Error("Thumbnail is too large. Keep it below 1.5 MB, preferably below 300 KB.");
+  }
+  if (!response.body) throw new Error("Thumbnail URL returned an empty response.");
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxThumbnailBytes) {
+        await reader.cancel();
+        throw new Error("Thumbnail is too large. Keep it below 1.5 MB, preferably below 300 KB.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return storeThumbnailBytes(Buffer.concat(chunks), mimeType, preferredName);
 }
 
 function createMcpServer() {
@@ -104,12 +156,13 @@ function createMcpServer() {
       coverImageUrl: z.string().nullable().optional(),
       thumbnailBase64: z.string().min(1).optional(),
       thumbnailMimeType: z.enum(["image/webp", "image/png", "image/jpeg"]).optional(),
+      thumbnailImageUrl: z.string().url().optional(),
       seoTitle: z.string().nullable().optional(),
       seoDescription: z.string().nullable().optional(),
       sourceUrl: z.string().nullable().optional(),
       confirmationStatus: z.enum(["confirmed", "developing", "rumour"]).optional(),
     },
-    async ({ thumbnailBase64, thumbnailMimeType, ...story }) => {
+    async ({ thumbnailBase64, thumbnailMimeType, thumbnailImageUrl, ...story }) => {
       try {
         await wisel.get(story.slug);
         throw new Error(`A Wisel story with slug '${story.slug}' already exists. Use update_wisel_story or attach_wisel_story_thumbnail instead.`);
@@ -122,9 +175,15 @@ function createMcpServer() {
 
       let coverImageUrl = story.coverImageUrl ?? null;
       let thumbnail: Awaited<ReturnType<typeof storeThumbnail>> | null = null;
+      if (thumbnailImageUrl && (thumbnailBase64 || thumbnailMimeType)) {
+        throw new Error("Provide either thumbnailImageUrl or thumbnailBase64 with thumbnailMimeType, not both.");
+      }
       if (thumbnailBase64 || thumbnailMimeType) {
         if (!thumbnailBase64 || !thumbnailMimeType) throw new Error("Provide both thumbnailBase64 and thumbnailMimeType.");
         thumbnail = await storeThumbnail(thumbnailBase64, thumbnailMimeType, story.slug);
+        coverImageUrl = thumbnail.url;
+      } else if (thumbnailImageUrl) {
+        thumbnail = await storeThumbnailFromUrl(thumbnailImageUrl, story.slug);
         coverImageUrl = thumbnail.url;
       }
 
@@ -142,17 +201,26 @@ function createMcpServer() {
 
   server.tool(
     "attach_wisel_story_thumbnail",
-    "Upload a generated thumbnail to persistent Wisel VPS media storage and attach its public URL to an existing story. The story remains in review status.",
+    "Download an approved HTTPS image or accept Base64 image data, store it in persistent Wisel VPS media storage, and attach its public URL to an existing story. The story remains in review status.",
     {
       id: z.string().min(1),
-      imageBase64: z.string().min(1),
-      mimeType: z.enum(["image/webp", "image/png", "image/jpeg"]),
+      imageBase64: z.string().min(1).optional(),
+      mimeType: z.enum(["image/webp", "image/png", "image/jpeg"]).optional(),
+      imageUrl: z.string().url().optional(),
       filenameStem: z.string().min(1).optional(),
     },
-    async ({ id, imageBase64, mimeType, filenameStem }) => {
+    async ({ id, imageBase64, mimeType, imageUrl, filenameStem }) => {
+      if (imageUrl && (imageBase64 || mimeType)) {
+        throw new Error("Provide either imageUrl or imageBase64 with mimeType, not both.");
+      }
+      if (!imageUrl && (!imageBase64 || !mimeType)) {
+        throw new Error("Provide imageUrl, or provide both imageBase64 and mimeType.");
+      }
       const current = await wisel.get(id) as { story?: Record<string, unknown> };
       const slug = typeof current.story?.slug === "string" ? current.story.slug : id;
-      const thumbnail = await storeThumbnail(imageBase64, mimeType, filenameStem ?? slug);
+      const thumbnail = imageUrl
+        ? await storeThumbnailFromUrl(imageUrl, filenameStem ?? slug)
+        : await storeThumbnail(imageBase64!, mimeType!, filenameStem ?? slug);
       const updated = await wisel.update(id, { coverImageUrl: thumbnail.url, status: "review" });
       const verified = await wisel.get(id);
       return result({ thumbnail, updated, verified }, `Uploaded the thumbnail and attached it to '${slug}' for review.`);
