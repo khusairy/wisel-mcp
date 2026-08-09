@@ -46,12 +46,14 @@ The remote MCP exposes:
 - `list_wisel_stories`
 - `get_wisel_story`
 - `create_wisel_story_for_review`
-- `attach_wisel_story_thumbnail`
+- `attach_wisel_story_thumbnail` — upload Base64 artwork or download an approved HTTPS image, then attach it to an existing story
 - `update_wisel_story`
 
 There is intentionally no MCP publish or schedule tool. New or updated stories are always kept in `review`; publishing and scheduling remain human actions in the Wisel admin dashboard.
 
 The MCP does not connect directly to PostgreSQL. It uses the existing editorial API so validation and persistence remain centralized. Thumbnail files are stored on persistent VPS media storage; PostgreSQL stores only the resulting public `coverImageUrl`.
+
+For normal ChatGPT use, pass an approved `imageUrl` to `attach_wisel_story_thumbnail`. The server downloads only HTTPS WebP, PNG, or JPEG files, rejects redirects and credentials in URLs, enforces a 1.5 MB limit, saves the image to Wisel media storage, patches the story, and reads the story back to verify the change. `imageBase64` plus `mimeType` remains available for an image that has no public URL.
 
 ## Local build
 
