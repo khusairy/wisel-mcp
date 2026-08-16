@@ -252,6 +252,30 @@ function createMcpServer() {
     },
   );
 
+  server.tool(
+    "publish_wisel_story",
+    "Publish an existing Wisel story immediately after the editorial quality gate. Automatic publication is allowed only for confirmed stories with both a source URL and persistent thumbnail.",
+    { id: z.string().min(1) },
+    async ({ id }) => {
+      const current = await wisel.get(id) as { story?: Record<string, unknown> };
+      const story = current.story;
+      if (!story) throw new Error(`Wisel story '${id}' was not found.`);
+      if (story.confirmationStatus !== "confirmed") {
+        throw new Error("Only confirmed stories may be published automatically.");
+      }
+      if (typeof story.sourceUrl !== "string" || !story.sourceUrl.trim()) {
+        throw new Error("A source URL is required before automatic publication.");
+      }
+      if (typeof story.coverImageUrl !== "string" || !story.coverImageUrl.trim()) {
+        throw new Error("A persistent thumbnail is required before automatic publication.");
+      }
+
+      const published = await wisel.publish(id);
+      const verified = await wisel.get(id);
+      return result({ published, verified }, `Published '${typeof story.title === "string" ? story.title : id}'.`);
+    },
+  );
+
   return server;
 }
 
